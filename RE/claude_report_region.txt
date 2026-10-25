@@ -1,0 +1,337 @@
+================================================================================
+STATIC-ANALYSIS REPORT  —  region_analysis.txt
+x64 code region, image base 0x180000000  (~7,312 instructions, stripped sample)
+================================================================================
+
+0. METHOD & SCOPE NOTE
+--------------------------------------------------------------------------------
+The dump is Capstone TEXT only (no raw opcode bytes). Branch opcodes/bytes below
+are RECONSTRUCTED from (a) the mnemonic and (b) the encoded length, which equals
+(VA of next listed instruction) - (VA of the branch): length 2 => SHORT rel8
+(1-byte opcode 7x); length 6 => NEAR rel32 (2-byte opcode 0F 8x). rel operands
+were recomputed as target-(VA+len) and cross-checked against the listed targets.
+
+Opcode/flip reference used throughout:
+  je/jz   74 / 0F84   <->  jne/jnz 75 / 0F85
+  jb/jc   72 / 0F82   <->  jae/jnc 73 / 0F83
+  jbe     76 / 0F86   <->  ja      77 / 0F87
+  jl      7C / 0F8C   <->  jge     7D / 0F8D
+  jle     7E / 0F8E   <->  jg      7F / 0F8F
+A "flip" inverts the condition, so for any given input the OTHER successor is
+taken. Flips are 1 byte (short) or 1 changed byte within the 2-byte 0F8x field
+(near) — i.e. exactly the 74<->75 / 0F84<->0F85 class the task allows.
+
+OVERALL CHARACTER
+This region is almost entirely compiler-generated MSVC C++ RAII + dispatch
+plumbing for one large "harness" class (member offsets 0..~0x490, embedded
+std::string w/ SSO, std::function/bound-callback members, shared_ptr control
+blocks, and a std::map). It contains: copy/move constructors, ~40 destructors
+and deleting-dtor thunks, async "clone-and-post" task thunks, property setters
+with telemetry, event-binding subscribers, and three kind-tag dispatch/format
+functions. /GS stack cookies guard the two largest dispatchers.
+
+KEY SEMANTIC FINDING: there is NO classic crackme comparator in this region —
+nothing compares user-derived input against a secret constant (no memcmp/strcmp
+of a key). Almost all branches are mechanical: null-guards before virtual calls,
+shared_ptr refcount "==1 last-owner" tests, std::string SSO size checks, and
+red-black-tree node-colour tests. The only genuine two-outcome *logic* is:
+  - kind-tag dispatchers that switch on an int tag in {8, 9, 0xc}
+    (0x18662b7e0, 0x18662e2c0, 0x18662ea50), and
+  - bool-flag / bound-callback / status-code selectors in the property setters
+    and the formatter 0x18662cf40.
+The real validation almost certainly lives in callees outside this dump
+(0x186632130, 0x186627e60, 0x1820a0110, consumers of the config bool cached at
+[obj+0x290]) or behind the obfuscated stub at 0x18662fb70 (see end).
+
+
+================================================================================
+DELIVERABLE 1 — FUNCTION-BOUNDARY TABLE
+================================================================================
+Functions are delimited by int3 padding. "vcall" = indirect/virtual call; the
+offset is the vtable slot used. "[rax]" = slot 0; "[rax+0x10]"/"[rax+0x20]" =
+later slots. "thunks" = string/member copy & alloc helpers.
+
+ENTRY VA     ~SIZE  ROLE                                   VCALLS (slot)        NOTES / THUNKS
+--- Region A: constructors (0x186629000-0x1866295ff) -------------------------------------------
+186629000    0xDF   move ctor (vtbl+fields 48-54,SSE str) [rax]@629033          str @629170 ...90
+1866290e0    0xAA   move/copy ctor (fields->+0x48)        [rax]@629120          b51b30,b51eb0,rip
+186629190    0x9A   move ctor (qword 08-20, +0x28 base)   -                     rip@6291e9; vtbl 13d4b9d
+186629230    0x8C   field-copy + 2 string ctor + finalize -                     b58c0 + 4x rip
+1866292c0    0x7B   composite ctor -> base 186628f10      -                     rip@6292e8 (member 0x90)
+186629340    0x85   composite ctor -> base 1866294f0      -                     3x rip (0xc8/0xd8)
+1866293d0    0x85   composite ctor -> base 186629680      -                     3x rip (0x458/0x468)
+186629460    0x85   composite ctor -> base 186628ff0      -                     3x rip (0xa8/0xb8)
+1866294f0    0x10F  move ctor (large; +0x90,0x98,0xb0)    [rax]@629533          rip@6295cd,6295e1
+--- Region B: constructors (0x186629600-0x186629f30) -------------------------------------------
+186629600    0x80   move ctor -> 186629ae0 (+0x470)       -                     rip@629628
+186629680    0xE0   move ctor (str swap, poly clone)      [rax]@6296bb          18364fff0@629749
+186629760    0xA0   move ctor (+0x38/0x40 str)            -                     2x rip
+186629800    0x80   move ctor -> 186628ff0 (+0xa8)        -                     rip@629828
+186629880    0x90   move ctor -> 186628f10 (+0x90/0xa0)   -                     3x rip
+186629910    0x80   copy subobj -> 186629db0 (+0xc0)      -                     rip@629938
+186629990    0x80   copy subobj -> 1866294f0 (+0xc8)      -                     rip@6299b8
+186629a10    0xD0   move ctor (qword members 28-60)       -                     rip@629a69
+186629ae0    0x100  move ctor (clone+swap, +0x90/0x458)   [rax]@629b1b          18364fff0@629ba9
+186629be0    0xC0   move ctor (clone, +0x90/0x458)        [rax]@629c20          b51b30,b51eb0,18364fff0
+186629ca0    0x80   copy ctor, shared_ptr member @+0x20   -                     2x rip; b4f3e0 lock inc x2
+186629d20    0x90   copy subobj -> 186629db0 (+0xc0/0xd0) -                     3x rip
+186629db0    0xC0   move ctor (+0x20-2c, swap, +0xa8)     -                     b58c0@629e47; 2x rip
+186629e70    0xC0   copy ctor (poly clone, +0xa8)         [rax]@629efe          b51b30,b51eb0,2x rip
+186629f30    0x90   copy subobj -> 186629ae0 (+0x470/80)  -                     3x rip
+--- Region C: ctor + destructor table (0x186629fc0-0x18662b1ff) --------------------------------
+186629fc0   ~0x80   vector reserve + element copy        -                     186631f00,181bf8be0(memmove)
+18662a040   ~0x2D0  CONSTRUCTOR of big class;            -                     caches CONFIG BOOL ->
+                    installs 2 vtables; inits members                          [obj+0x290] from 180ffc970
+18662a310    0x58   dtor (+0x38,+0x28,+0x10; refcnt)      -                     180c7c760,af40,b4f3e0
+18662a370    0x90   dtor (refcnt +0x468)                 [rax+0x20]@a3e1       70f40,cb1dd0
+18662a400    0x77   dtor (refcnt +0x70)                  [rax+0x20]@a457       cb1dd0, tail jmp dtor
+18662a480    0x40   dtor (+0x48)                         [rax+0x20]@a4a8       cb1dd0
+18662a4c0    0x46   dtor (+0x90,+0x48)                   [rax+0x20]@a4f5       cb1dd0
+18662a510    0x57   dtor (+0x70,+0x60,+0x58)             [rax+0x20]@a546       85e90,cb1dd0
+18662a570    0x76   dtor (refcnt +0xa0)                  [rax+0x20]@a5d5       cb1dd0
+18662a5f0    0x6C   dtor (+0xd8..+0x48)                  [rax+0x20]@a64b       85e90,cb1dd0
+18662a660    0x5E   dtor (+0x468..+0x48)                 [rax+0x20]@a6ad       85e90,70f40,cb1dd0
+18662a6c0    0x5F   dtor (+0xb8..+0x48)                  [rax+0x20]@a70e       af40,cb1dd0
+18662a720    0x53   dtor (+0xb0,+0x98,+0x48)             [rax+0x20]@a762       cb1dd0
+18662a780    0x8F   dtor (refcnt +0x480)                 [rax+0x20]@a7fe       70f40,cb1dd0
+18662a810    0x45   dtor (+0x90,+0x48)                   [rax+0x20]@a844       70f40,cb1dd0
+18662a860    0x7A   dtor (two refcnts +0x38,+0)          -                     af40,b4f3e0
+18662a8e0    0x45   dtor (+0x10; refcnt; tail delete)    -                     af40,b4f3e0,jmp b4c5c
+18662a930    0x83   dtor (refcnt +0xb8)                  [rax+0x20]@a9a2       cb1dd0
+18662a9c0    0x52   dtor (+0xa0,+0x90,+0x48)             [rax+0x20]@aa01       85e90,cb1dd0
+18662aa20    0x96   dtor (refcnt +0xd0)                  [rax+0x20]@aa8d       cb1dd0 x2
+18662aac0    0x90   dtor (refcnt +0xd8)                  [rax+0x20]@ab3f       cb1dd0
+18662ab50    0x52   dtor (+0x458,+0x90,+0x48)            [rax+0x20]@ab91       70f40,cb1dd0
+18662abb0    0x72   dtor (+0xd0..+0x20)                  [rax+0x20]@abf9       af40,cb1dd0
+18662ac30    0x59   dtor (+0xa8,+0x68,+0x20)             [rax+0x20]@ac60       cb1dd0
+18662ac90    0x6B   dtor (+0x480..+0x48; refcnt)         [rax+0x20]@acea       af40,70f40,cb1dd0
+18662ad00    0x62   dtor (+0xb8..+0x18)                  [rax+0x20]@ad39       cb1dd0,af40
+18662ad70    0x6F   dtor (+0xd8..+0x18)                  [rax+0x20]@adb6       cb1dd0,85e90
+18662ade0    0x60   dtor (+0xb8..+0x18)                  [rax+0x20]@ae18       70f40,cb1dd0,85e90
+18662ae50    0x6E   dtor (+0x480..+0x18)                 [rax+0x20]@ae95       70f40,cb1dd0,af40
+18662aec0    0x6F   dtor (+0xd0..+0x18)                  [rax+0x20]@aef3       cb1dd0,af40
+18662af30    5      thunk -> 18662af40                   -                     -
+18662af40    0x62   LAZY-INIT helper (pred al; alloc 2)  -                     625e90 x2; guard @af5f
+18662afb0    0x4F   dtor (+0x70..+0x18)                  [rax+0x20]@afdc       85e90,cb1dd0
+18662b040    0x4F   dtor (+0x38,+0x28,+0x18; refcnt)     -                     af40,b4f3e0,c7c760
+18662b0a0    0x57   dtor (+0x48,+0x30,+0x18)             [rax+0x20]@b0c3       85e90
+18662b100/110/120  5 each  thunks -> ae50 / aec0 / 180c7c7d0
+18662b130   ~0x1E4  MASTER destructor (8 functors,       [rax+0x20]@b1c5,     624e10,bad070,
+                    3 nodes, 2 tree/map, 2 strings)       b1e5,b205            b4c64,b4309f,cb1dd0
+--- Region D: task-post thunks + diagnostic formatter (0x18662b200-0x18662c9ff) ----------------
+18662b320    0x13   scalar deleting-dtor thunk (free 480)-                     jmp b4c64
+18662b340    0x254  clone-and-post task thunk (new 0x488)[rax+0x20]@b518       new b4c20; copy 629680,6293d0
+18662b5a0    0x238  clone-and-post task thunk (new 0x90) [rax+0x20]@b752,b7a5 copy 629230; b58c0,85e90
+18662b7e0   ~0x968  *** LOCKED DIAGNOSTIC/ERROR FORMATTER [rax]@beec,          mutex b434b/51/87; new;
+                    switch on error-kind *arg2 in {8,9};  [rax+0x20]@bfdf      strchr '\' b666c;
+                    builds std::map<string,...>; emit                          emit 1866199b0; map b55640
+18662c150    0x254  clone-and-post task thunk (new 0x488)[rax+0x20]@c328,c389 copy 629680,6293d0
+18662c3b0    0x223  clone-and-post task thunk (new 0xc0) [rax+0x20]@c566,c5b8 copy 628f10,629880
+18662c5e0    0x254  clone-and-post task thunk (new 0x488)[rax+0x20]@c7b8,c819 copy 629680,6293d0
+18662c840    0x1DA  clone-and-post task thunk (new 0x4a0)-                     copy 629be0,629f30
+--- Region E: setters / binders / formatter / dispatch (0x18662ca00-0x18662e2bf) ---------------
+18662ca20    0x2BE  property setter + telemetry (dl+cb)  [rax+0x10]@cad3,cb01 180b52860; b666c; log 295/8/c
+18662cd00    0x234  callback/factory registration        [rax],[rax+8] release c7c460,c7c760,628d60
+18662cf40    0x433  *** FORMATTER / STATUS SELECTOR       [rax+0x90]@d146,     635b40,636aa0,635680;
+                    (stack cookie) pred test al; emits     [rax+0x10]@cfe1,d0cb cmp [rsp+0x40]; status 8-c
+                    status code 0x8/9/a/b/c
+18662d380    0x16F  property setter (dl -> val 1ae78/     [rax+0x10]@d3f0      636790; b666c; log 340/344
+                    1adb5) + telemetry
+18662d500    0x23E  event-binding subscribe (new 0xd8,    [rax+0x20]@d6c7      625e90; copy 6290e0,629460
+                    cb @+0xb8)
+18662d740    0x1C8  event-binding subscribe (new 0xf0,    [rip] dispatch       625e90; copy 629e70,629d20
+                    cb @+0xd0)
+18662d910    0x2BE  property setter + telemetry (twin of  [rax+0x10]@d9c7,     180b52860; b666c; log 237/a/e
+                    ca20; has movsd double path)          da91,db36
+18662dbd0    0x238  event-binding subscribe (new 0x90,    [rax+0x20]@dd82      85c10/e90; copy 629230; b58c0
+                    cb @+0x70)
+18662de10    0x2BE  property setter + telemetry (twin)    [rax+0x10]@dec7      180b52860; b666c; log 26e/71/5
+18662e0f0    0x1C8  event-binding subscribe (new 0xf8,    [rip] dispatch       85c10/e90; copy 6294f0,629340
+                    cb @+0xd8)
+--- Region F: dispatchers / deserialize / deleting-dtors (0x18662e2c0-EOF) ---------------------
+18662e2c0    0x54E  *** KIND-DISPATCH EMITTER/VALIDATOR   [rax+0x10]@e349,     632130,627e60,18662f7c0;
+                    (stack cookie) switch eax in {9,0xc,8} e45b,e6d3;          b51b30/eb0,18364fff0;
+                    + member test [rcx+0x140]; sets        [rax]@e591;         strchr'\' b666c;
+                    [obj+0x149]=1; logs lines 280-2aa      [rax+0x20]@e630     emit 1866199b0
+18662e810    0x178  bool setter (test dl); byte[rax+0x149]=0 [rax+0x10]@e880,e90d  codes 1ae78/1adb5; log 2ff/303
+18662e990    0xB0   member string-copy ctor              [rip] getters        1817debd0 x2; 1865e4fd0
+18662ea50    0x948  *** KIND-DISPATCH TRANSFORM/DESERIAL  [rax+0x10]@eaf0,     636790; rb-tree cmp b4f260;
+                    switch eax in {9,0xc}; loop x count;   ec15; [rax]@f1f2;   b55640; b51b30; emit; len-fail
+                    cmp [rbp-0x78],8 -> normal vs throw    [rax+0x20]@f23a     b55c00; log 312/319/347/34d
+18662f500    0x224  object builder/visitor factory(new c0)[rax+0x20]@f708      628f10,629880; 85e90/c10
+18662f730    0x8A   delegate invoke (4-arg) via [rcx+0x38][rax+0x10]@f78c      180b52860 x2
+18662f7c0    0x5C   delegate invoke (2-arg) via [rcx+0x38][rax+0x10]@f7fc      180b52860
+18662f830    0x78   scalar deleting-dtor (free 0xb8)     [rax+0x20]@f863      cb1dd0,85e90,b4c64
+18662f8b0    0x34   deleting-dtor (0xd0) -> 18662ad00    -                     b4c64
+18662f8f0    0x34   deleting-dtor (0xf0) -> 18662ad70    -                     b4c64
+18662f930    0x34   deleting-dtor (0x480) -> 18662ade0   -                     b4c64
+18662f970    0x78   deleting-dtor (0x50; refcnt lock xadd)-                    b4f3e0,c7c760,b4c5c/c64
+18662f9f0    0x78   scalar deleting-dtor (free 0x88)     [rax+0x20]@fa1a      85e90,b4c64
+18662fa70    0x34   deleting-dtor (0x498) -> 18662ae50   -                     b4c64
+18662fab0    0x34   deleting-dtor (0xe8) -> 18662aec0    -                     b4c64
+18662faf0    0x34   deleting-dtor (0x10) -> 18662af40    -                     b4c64
+18662fb30    0x34   deleting-dtor (0x298) -> 18662b130   -                     b4c64
+18662fb70    ----   OBFUSCATED / ANTI-ANALYSIS stub (popfq, movabs, loopne, misaligned bytes) - NOT
+                    statically decodable; likely decoy or self-modifying. Entry only; see end.
+
+
+================================================================================
+DELIVERABLE 2 — DECISION POINTS (functions with two distinct outcomes)
+================================================================================
+Grouped by nature. For each: branch VA | opcode | short/near | value feeding it.
+
+-- 2A. MEANINGFUL LOGIC (the real two-outcome selectors) ---------------------------------------
+Func 18662b7e0 (diagnostic formatter):
+  18662b82c  jne  near  cmp dword [rdx],9      -> error-kind tag *arg2 == 9 ?
+  18662bdb0  jne  near  cmp dword [rsp+0x68],8 -> saved tag == 8 ? (else sets byte[[r12]+0x149]=1)
+  18662bd93  (cmp [rsp+0x68],8; setne cl -> stores kind 8 or 9 into new map node; selector, not branch)
+  18662ba50  jne  near  test eax,eax after mutex try-lock (b434b) -> lock-fail path
+  18662bacc  jle  near  r8d = count mod 0x1e; loop guard
+  18662bc82  jl   near  inc r14d; cmp r14d,[rbp-0x78] -> loop back-edge
+
+Func 18662cf40 (status selector / formatter):
+  18662cfe9  je   near  test al,al  (result of vcall [rip+0x12b75e9]) -> MAIN 2-way split
+                        (true: format/compare path ; false: alt path @18662d2ae)
+  18662d0b2  je   short test al,al  (result of vcall 1820a0110) -> status ebx = 5 vs 2
+  18662d1ff  je   short cmp byte [rsp+0x40],0 -> status 0xb/8 vs 9/0xc
+  18662d2bd  je   short cmp byte [rax+0x290],0 -> reads the CONFIG BOOL cached by the ctor
+
+Func 18662e2c0 (kind-dispatch emitter):
+  18662e300  jne  near  eax = [rdx] (arg2 dword = kind); cmp eax,9
+  18662e412  jne  near  cmp eax,0xc
+  18662e525  je   near  cmp eax,8   (default else-path sets byte[rcx+0x149]=1)
+  18662e6a1  je   short cmp qword [rcx+0x140],rbx(=0) -> bound-callback null test (in case 8)
+  18662e835  je   near  test dl,dl (arg3 bool) [in sibling 18662e810: byte[rax+0x149], code 1ae78/1adb5]
+
+Func 18662ea50 (kind-dispatch transform / deserialize):
+  18662ea93  jne  near  eax = [rdx]; cmp eax,9
+  18662ebb8  jne  near  cmp eax,0xc
+  18662f156  je   near  cmp dword [rbp-0x78],8  -> == 8 : ERROR+throw @f398 (code 0x1ae14,line 0x34d)
+                                                 != 8 : NORMAL (code 0x1adb1).  CLEANEST success/fail lever.
+  18662f125  (cmp [rbp-0x78],8; setne cl -> result selector 8 or 9 into [rsi+0x40])
+
+Property-setter bool + bound-callback selectors (telemetry-weight):
+  18662ca4c  je   near  test dl,dl                 (setter 18662ca20)
+  18662ca5f  je   near  cmp [rax+0x140],rdi(0)     bound-callback null
+  18662d3a5  je   near  test dl,dl (set @d38d)      (setter 18662d380; picks val 0x1ae78 vs 0x1adb5)
+  18662d932  je   near  test dl,dl                 (setter 18662d910)
+  18662d94f  je   near  cmp [rax+0x140],rdi(0)     bound-callback null
+  18662de3c  je   near  test dl,dl                 (setter 18662de10)
+  18662de4f  je   near  cmp [rax+0x140],rdi(0)     bound-callback null
+
+-- 2B. TRIVIAL / MECHANICAL BRANCHES (two outcomes, but not gating logic) -----------------------
+Null-guard-before-virtual-call  (test rcx,rcx; je  -> skip optional subobject clone when ptr NULL):
+  18662902b, 186629118, 18662952b, 1866296b3, 186629b13, 186629c18, 186629ef6   (all je, short)
+  186629cf1 (je, short)  -> null-guard-before-shared_ptr refcount (rcx=[rsi+0x20] control block)
+  18662e333, 18662e445, 18662e588, 18662e621, 18662e6c3  -> same null-guard idiom inside dispatchers
+
+shared_ptr refcount "==1 last-owner -> delete" tests  (lock xadd; cmp e?x,1; jne):
+  18662a34e, 18662a396, 18662a427, 18662a596, 18662a7a6, 18662a889, 18662a90b,
+  18662a956, 18662aa4a, 18662aae6, 18662b06c, 18662ceb2, 18662cf0a, 18662f9a1   (and mirrors)
+
+std::string SSO free/size checks  (cmp ...,0x10 / 0x1000 / 0x1f):
+  18662a21d/a227/a236/a24b, 18662b2b6/b2c6/b2db, 18662bc48/bc58/bc70,
+  18662c060/c070/c088, 18662c0b4/c0c4/c0dc, 18662d000, 18662e367/e3cb/e3e0/e3f8,
+  18662e479/e4dd/e4f2/e50e, 18662eb08/eb6f/eb86/eb9e, ... (many; alloc-header guards end in int3/__fastfail)
+
+std::map red-black-tree traversal (node colour/nil flag cmp byte [..+0x19],0; string-less b4f260):
+  18662bb6f, 18662bb85, 18662bba7, 18662bbad, 18662bbbe (and the mirror set bcaf..bd24;
+  same pattern re-appears at 18662eeed..ef5f / 18662f048..f0a2 in 18662ea50)
+container max_size length_error guards: 18662bbce, 18662ef64, 18662f0b4
+
+lazy-init guard:
+  18662af5f  jne  short  test al,al (pred [rip+0x12b92d3]); al!=0 -> skip alloc/init of 2 sub-buffers
+
+deleting-dtor "owns heap?" flag tests  (test bl/sil/dil,1; je -> call operator delete):
+  18662f881, 18662f8c4, 18662f904, 18662f944, 18662f9c8, 18662fa42, 18662fa84,
+  18662fac4, 18662fb04, 18662fb44   (plus test bl,2 @18662d104 / test bl,1 @18662d11b)
+
+
+================================================================================
+DELIVERABLE 3 — MINIMAL-PATCH CANDIDATES (1-2 byte branch inversions)
+================================================================================
+Each flips the condition so the alternate successor is taken for a given input.
+"Current/Replace" show the opcode byte(s) that change (near rel32 operand bytes
+are unchanged). RANKED LOWEST-RISK FIRST. Risk = chance of crash/corruption or
+collateral damage WITHIN the function if the flip is applied.
+
+RANK VA          CUR    ->REPL  FUNC / WHAT BECOMES THE TAKEN PATH                     RESIDUAL RISK
+---- ----------  -----  ------  ---------------------------------------------------   -------------
+ 1   18662d3a5   0F 84  0F 85   18662d380 setter: for the bool-true input now stores  VERY LOW. Pure
+                                value-block 0x1adb5 instead of 0x1ae78 (vice-versa).   stored-code/telemetry
+                                                                                       swap; no deref/alloc.
+ 2   18662ca4c   0F 84  0F 85   18662ca20 setter: selects a different telemetry        VERY LOW. Cosmetic
+                                message branch for the bool-true input.                (log line only).
+ 2   18662d932   0F 84  0F 85   18662d910 setter (twin of ca20): same cosmetic swap.   VERY LOW.
+ 2   18662de3c   0F 84  0F 85   18662de10 setter (twin): same cosmetic swap.           VERY LOW.
+ 3   18662d0b2   74     75      18662cf40: forces status ebx=2 vs 5 (or vice-versa)    LOW. Status int
+                                for the vcall-true input.                              only; no memory op.
+ 4   18662f156   0F 84  0F 85   18662ea50: for kind==8 input, NORMAL path (code        MEDIUM. Skips the
+                                0x1adb1) runs instead of diverting to ERROR+throw        throw => "success";
+                                @f398. Single cleanest "force success" edit.           downstream still
+                                                                                       builds result w/
+                                                                                       selector [rsi+0x40];
+                                                                                       semantics differ if
+                                                                                       kind really !=8.
+ 5   18662d1ff   74     75      18662cf40: forces the 0xb/8 status branch vs the       MEDIUM. Status fed
+                                9/0xc branch (bool [rsp+0x40]).                         to 636aa0 renderer.
+ 6   18662cfe9   0F 84  0F 85   18662cf40: flips the MAIN formatter predicate          MEDIUM. Changes which
+                                (test al); forces format/compare path vs alt @d2ae.    status code produced.
+ 7   18662b82c   0F 85  0F 84   18662b7e0: forces the kind==9 diagnostic variant       MEDIUM. Reroutes which
+                                for non-9 input (or vice-versa).                       message is emitted;
+                                                                                       tag re-read later.
+ 7   18662bdb0   0F 85  0F 84   18662b7e0: forces kind==8 formatter path vs the        MEDIUM. Toggles the
+                                else-path that sets byte[[r12]+0x149]=1.                +0x149 "diag produced"
+                                                                                       state byte.
+ 8   18662e525   0F 84  0F 85   18662e2c0: for kind==8 input, take the default         MED-HIGH. Wrong
+                                write-path (sets byte[rcx+0x149]=1) instead of the      serializer case runs;
+                                case-8 block @e686 (or vice-versa).                    verify target prologue.
+ 8   18662e300   0F 85  0F 84   18662e2c0: force the kind==9 handler for non-9 input.  MED-HIGH. Only valid
+                                                                                       if input truly kind 9.
+ 8   18662e412   0F 85  0F 84   18662e2c0: force the kind==0xc handler path.           MED-HIGH. Same caveat.
+ 9   18662ca5f   0F 84  0F 85   18662ca20: treat a NULL bound-callback as present      MED. Non-null case
+                                (invoke it) and a present one as absent.               skips invoke; null
+                                                                                       case may deref unbound
+                                                                                       cb -> fail-fast.
+ 9   18662d94f   0F 84  0F 85   18662d910: bound-callback null test (twin).            MED (as above).
+ 9   18662de4f   0F 84  0F 85   18662de10: bound-callback null test (twin).            MED (as above).
+ 9   18662e6a1   74     75      18662e2c0 (case 8): force the [rcx+0x140]!=0 alloc      MED. Null-deref if
+                                path when member is null (or skip it when non-null).   member really null.
+
+--- DO NOT PATCH (listed for completeness; flipping corrupts state / crashes) ---
+HIGH  Ctor null-guards 18662902b/9118/952b/96b3/b13/c18/ef6 (74->75): the NULL case
+      falls into call [rax] on rcx=0 => guaranteed null-vtable deref. The non-null
+      case silently drops a subobject clone. No feature is unlocked.
+HIGH  186629cf1 (74->75): null case does lock-inc on a NULL control block (crash);
+      non-null case under-counts the refcount => later double-free / use-after-free.
+HIGH  refcount "cmp ...,1; jne" sites (2B each): flipping deletes a still-shared
+      object (UAF) or leaks it; never a useful bypass.
+HIGH  SSO size jb/ja guards (cmp ...,0x10/0x1000/0x1f): the else arms end in
+      int3 / __fastfail; flipping routes valid strings into the fault stub.
+HIGH  RB-tree node-colour branches (bb6f/bb85/bba7/bbad/bbbe + mirrors): flipping
+      breaks std::map ordering => corrupted container / infinite loop.
+HIGH  Lazy-init guard 18662af5f (75->74): forces the alloc path to be skipped =>
+      [obj+0x10]/[obj+0x28] left uninitialized => later null-deref / UAF.
+MED   Deleting-dtor "test bl,1" flags (f881/f8c4/f904/f944/f9c8/fa42/fa84/fac4/
+      fb04/fb44): flipping either double-frees or leaks the object; not a gate.
+
+
+================================================================================
+SUMMARY / RECOMMENDATION
+================================================================================
+* Function count in region: ~60. Roughly 9 ctors (A), 15 ctors (B), 1 ctor + ~34
+  dtors/thunks (C), 1 formatter + 7 task thunks (D), ~11 setters/binders/formatter
+  (E), 3 dispatchers + ~15 dtor thunks + 1 obfuscated stub (F).
+* The only non-boilerplate two-outcome logic is concentrated in five functions:
+  18662b7e0, 18662cf40, 18662e2c0, 18662e810, 18662ea50 — all kind-tag / bool /
+  status selectors, not key comparators.
+* LOWEST-RISK USEFUL EDIT: rank-1 (18662d3a5, 0F84->0F85) if the goal is only to
+  flip a stored diagnostic code with zero collateral.
+* BEST "FORCE SUCCESS" EDIT: rank-4 (18662f156, 0F84->0F85) in 18662ea50 — a clean
+  two-way "normal vs throw-error" branch; flipping removes the throw for kind==8.
+* The genuine crackme comparator is NOT in this dump. Leads to follow in other
+  regions: the config bool cached at [obj+0x290] by ctor 18662a040 (read at
+  18662d2bd); callees 0x186632130 / 0x186627e60 / 0x18662f7c0 / 0x1820a0110; and
+  especially the obfuscated function at 0x18662fb70, which is not statically
+  decodable (junk popfq/loopne/misaligned bytes) and needs dynamic analysis.
+================================================================================

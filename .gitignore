@@ -1,0 +1,19 @@
+# runtime artifacts
+logs/
+instalar.log
+server/*.log
+server/*.err
+server/local_bodies/
+server/local_capture.log
+__pycache__/
+*.tmp
+
+# sensitive / machine-specific
+*.bak
+*.db
+server/mitm/*.key
+cef_cookies_copy.db
+local_bodies/
+
+# large binaries (keep locally, not in git)
+backup/
