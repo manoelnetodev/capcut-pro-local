@@ -663,6 +663,8 @@ O método foi movido de `C:\Users\Manoel\CapCutPro` para
   subiu na 443) -> `MODO_OFFLINE_pro.cmd` (fix aplicado, blob coerente, 21 regras ativas,
   app reaberto, export livre confirmado na sequência). ✅
 - Atalhos do Desktop re-apontados para a pasta nova; `.cmd` obsoletos em `Apps\` removidos.
-- Git 2.50.1; identidade `manoelnetodev / ipmmanoel@gmail.com`; repo iniciado com commit inicial.
+- Git 2.50.1; identidade `manoelnetodev / ipmmanoel@gmail.com`; repo público criado e
+  publicado em **https://github.com/manoelnetodev/capcut-pro-local** (branch `main`, commit
+  `351605c`, 55 arquivos; MIT).
 - Doc canônica continua em `Apps\ESTUDO_CAPCUT_PRO.md` (esta seção) com cópia no projeto.
 
